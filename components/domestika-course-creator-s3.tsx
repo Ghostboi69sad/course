@@ -2,8 +2,8 @@
 
 import React, { useState, useEffect, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { auth } from '../../container/firebase/firebase';
-import { getDatabase, ref, get } from 'firebase/database'
+import { auth, db } from '../../lib/firebase/config';
+import { getDatabase, ref, get, set, push } from 'firebase/database'
 import { Plus, Trash2, File, Video, Play, Pause, SkipBack, SkipForward, Volume2, VolumeX } from 'lucide-react'
 import { Button } from "../components/ui/button"
 import { Input } from "../components/ui/input"
@@ -15,34 +15,29 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { cn } from "../lib/utils"
 import axios from 'axios'
 import Navbar from '../../component/Navbar/Navbar'
+import type { Course, Chapter } from '../../types/course';
 
 interface ContentItem {
-  type: 'video' | 'file' | 'text';
+  id: string;
+  type: 'video' | 'file';
   name: string;
   url: string;
-  id?: string;
   duration?: string;
   description?: string;
 }
 
-interface Chapter {
-  id?: string;
-  title: string;
-  content: ContentItem[];
-}
-
-interface Course {
+interface ChapterWithContent extends Omit<Chapter, 'lessons'> {
   id: string;
   title: string;
-  description?: string;
-  instructor?: string;
-  duration?: string;
-  level?: string;
-  rating?: number;
-  enrolledStudents?: number;
-  price?: number;
-  chapters: Chapter[];
-  isPublic: boolean;
+  description: string;
+  content: ContentItem[];
+  order: number;
+}
+
+interface ExtendedCourse extends Omit<Course, 'chapters'> {
+  chapters: ChapterWithContent[];
+  stripePriceId?: string;
+  accessType: 'free' | 'paid';
 }
 
 interface DomestikaCourseCreatorS3Props {
@@ -50,7 +45,20 @@ interface DomestikaCourseCreatorS3Props {
 }
 
 const DomestikaCourseCreatorS3: React.FC<DomestikaCourseCreatorS3Props> = ({ course: initialCourse }) => {
-  const [course, setCourse] = useState<Course>(initialCourse);
+  const [course, setCourse] = useState<ExtendedCourse>(() => ({
+    ...initialCourse,
+    chapters: initialCourse.chapters.map(chapter => ({
+      ...chapter,
+      content: chapter.lessons.map(lesson => ({
+        id: lesson.id,
+        type: 'video',
+        name: lesson.title,
+        url: lesson.videoUrl,
+        duration: lesson.duration,
+        description: lesson.description
+      }))
+    }))
+  }));
   const [activeVideo, setActiveVideo] = useState<string | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
@@ -65,6 +73,25 @@ const DomestikaCourseCreatorS3: React.FC<DomestikaCourseCreatorS3Props> = ({ cou
   const navigate = useNavigate()
   const { courseId } = useParams<{ courseId: string }>()
   const [isAdmin, setIsAdmin] = useState(false)
+  const [accessType, setAccessType] = useState<'free' | 'paid'>('free');
+  const [price, setPrice] = useState(0);
+  const [stripePriceId, setStripePriceId] = useState('');
+
+  useEffect(() => {
+    const checkAdminStatus = async () => {
+      const user = auth.currentUser;
+      if (user) {
+        const userRef = ref(db, `users/${user.uid}`);
+        const snapshot = await get(userRef);
+        if (snapshot.exists()) {
+          const userData = snapshot.val();
+          setIsAdmin(userData?.role === 'admin');
+        }
+      }
+    };
+
+    checkAdminStatus();
+  }, [auth]);
 
   useEffect(() => {
     const checkUserRole = async () => {
@@ -97,60 +124,78 @@ const DomestikaCourseCreatorS3: React.FC<DomestikaCourseCreatorS3Props> = ({ cou
     }
   };
 
-  const saveCourse = async () => {
-    if (!isAdmin) {
-      console.error("Only admins can save courses")
-      return
-    }
+  const saveCourse = async (courseData: Course) => {
     try {
-      if (courseId) {
-        await axios.put(`/api/courses/${courseId}`, course)
-      } else {
-        const response = await axios.post('/api/courses', course)
-        setCourse(response.data)
-      }
-      navigate(`/course/${course.id}`)
+      const coursesRef = ref(db, 'courses');
+      const newCourseRef = push(coursesRef);
+      await set(newCourseRef, {
+        ...courseData,
+        id: newCourseRef.key,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      });
+      return newCourseRef.key;
     } catch (error) {
-      console.error('Error saving course:', error)
+      console.error('Error saving course:', error);
+      throw error;
     }
-  }
+  };
+
+  const updateCourse = async (courseId: string, courseData: Partial<Course>) => {
+    try {
+      const courseRef = ref(db, `courses/${courseId}`);
+      await set(courseRef, {
+        ...courseData,
+        updatedAt: new Date().toISOString()
+      });
+    } catch (error) {
+      console.error('Error updating course:', error);
+      throw error;
+    }
+  };
 
   const addChapter = () => {
     setCourse(prev => ({
       ...prev,
-      chapters: [...prev.chapters, { title: `Chapter ${prev.chapters.length + 1}`, content: [] }]
-    }))
-  }
+      chapters: [
+        ...prev.chapters,
+        {
+          id: `chapter-${Date.now()}`,
+          title: `Chapter ${prev.chapters.length + 1}`,
+          description: '',
+          content: [],
+          order: prev.chapters.length + 1
+        }
+      ]
+    }));
+  };
 
   const addContent = (chapterIndex: number) => {
-    setActiveChapterIndex(chapterIndex)
-  }
-
-  const handleAddContent = () => {
-    if (activeChapterIndex === null) return
-
+    if (!newContentName || !newContentUrl) return;
+    
     setCourse(prev => {
-      const newChapters = [...prev.chapters]
-      newChapters[activeChapterIndex].content.push({
+      const newChapters = [...prev.chapters];
+      newChapters[chapterIndex].content.push({
         type: newContentType,
         name: newContentName,
-        url: newContentUrl
-      })
-      return { ...prev, chapters: newChapters }
-    })
+        url: newContentUrl,
+        id: `content-${Date.now()}`
+      });
+      return { ...prev, chapters: newChapters };
+    });
 
-    setNewContentUrl('')
-    setNewContentName('')
-    setActiveChapterIndex(null)
-  }
+    setNewContentName('');
+    setNewContentUrl('');
+    setActiveChapterIndex(null);
+  };
 
   const removeContent = (chapterIndex: number, contentIndex: number) => {
     setCourse(prev => {
-      const newChapters = [...prev.chapters]
-      newChapters[chapterIndex].content.splice(contentIndex, 1)
-      return { ...prev, chapters: newChapters }
-    })
-  }
+      const newChapters = [...prev.chapters];
+      newChapters[chapterIndex].content.splice(contentIndex, 1);
+      return { ...prev, chapters: newChapters };
+    });
+  };
 
   const handleVideoClick = (url: string) => {
     setActiveVideo(url)
@@ -213,6 +258,30 @@ const DomestikaCourseCreatorS3: React.FC<DomestikaCourseCreatorS3Props> = ({ cou
     return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`
   }
 
+  const handleSaveCourse = async () => {
+    if (!isAdmin) return;
+    
+    const courseData = {
+      ...course,
+      accessType,
+      price,
+      stripePriceId,
+      updatedAt: new Date().toISOString()
+    };
+
+    try {
+      const courseRef = ref(db, `courses/${course.id || 'new'}`);
+      await set(courseRef, courseData);
+      
+      await fetch('/.netlify/functions/create-course-page', {
+        method: 'POST',
+        body: JSON.stringify(courseData)
+      });
+    } catch (error) {
+      console.error('Error saving course:', error);
+    }
+  };
+
   if (!isAdmin && !course.isPublic) {
     // التحقق من حالة اشتراك المستخدم هنا
     // إذا لم يكن لديه اشتراك نشط، يمكنك توجيهه إلى صفحة الاشتراكات
@@ -236,7 +305,7 @@ const DomestikaCourseCreatorS3: React.FC<DomestikaCourseCreatorS3Props> = ({ cou
               <AccordionItem key={index} value={`chapter-${index}`}>
                 <AccordionTrigger>{chapter.title}</AccordionTrigger>
                 <AccordionContent>
-                  {chapter.content.map((item, contentIndex) => (
+                  {chapter.content.map((item: ContentItem, contentIndex: number) => (
                     <div key={contentIndex} className="py-2">
                       {item.type === 'video' ? (
                         <button onClick={() => handleVideoClick(item.url)} className="flex items-center">
@@ -254,7 +323,7 @@ const DomestikaCourseCreatorS3: React.FC<DomestikaCourseCreatorS3Props> = ({ cou
             ))}
           </Accordion>
           {isAdmin && (
-            <Button onClick={saveCourse} className="mt-6 bg-green-500 hover:bg-green-600">
+            <Button onClick={handleSaveCourse} className="mt-6 bg-green-500 hover:bg-green-600">
               Save Course
             </Button>
           )}
