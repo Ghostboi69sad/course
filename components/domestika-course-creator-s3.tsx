@@ -1,5 +1,3 @@
-'use client'
-
 import React, { useState, useEffect, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { auth, db } from '../../lib/firebase/config';
@@ -16,6 +14,7 @@ import { cn } from "../lib/utils"
 import axios from 'axios'
 import Navbar from '../../component/Navbar/Navbar'
 import type { Course, Chapter } from '../../types/course';
+import { getMediaUrl } from './../../lib/aws/cloudfront-config';
 
 interface ContentItem {
   id: string;
@@ -198,10 +197,10 @@ const DomestikaCourseCreatorS3: React.FC<DomestikaCourseCreatorS3Props> = ({ cou
   };
 
   const handleVideoClick = (url: string) => {
-    setActiveVideo(url)
+    setActiveVideo(getMediaUrl(url))
     setIsPlaying(true)
     if (videoRef.current) {
-      videoRef.current.src = url
+      videoRef.current.src = getMediaUrl(url)
       videoRef.current.play()
     }
   }
@@ -279,6 +278,25 @@ const DomestikaCourseCreatorS3: React.FC<DomestikaCourseCreatorS3Props> = ({ cou
       });
     } catch (error) {
       console.error('Error saving course:', error);
+    }
+  };
+
+  const handleFileUpload = async (file: File) => {
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('fileName', file.name);
+      formData.append('contentType', file.type);
+      formData.append('fileName', file.name);
+      const response = await fetch('/.netlify/functions/s3-upload', {
+        method: 'POST',
+        body: formData
+      });
+      const { fileUrl } = await response.json();
+      return getMediaUrl(fileUrl); // استخدام CloudFront CDN
+    } catch (error) {
+      console.error('Error uploading file:', error);
+      throw error;
     }
   };
 
