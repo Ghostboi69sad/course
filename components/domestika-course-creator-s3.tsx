@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { auth, db } from '../../lib/firebase/config';
+import { auth, db } from '../../../lib/firebase/config';
 import { getDatabase, ref, get, set, push } from 'firebase/database'
 import { Plus, Trash2, File, Video, Play, Pause, SkipBack, SkipForward, Volume2, VolumeX } from 'lucide-react'
 import { Button } from "../components/ui/button"
